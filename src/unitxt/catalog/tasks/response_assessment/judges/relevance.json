@@ -1,0 +1,14 @@
+{
+    "__type__": "task",
+    "inputs": {
+        "inquiry": "str",
+        "response": "str"
+    },
+    "outputs": {
+        "label": "str"
+    },
+    "prediction_type": "str",
+    "metrics": [
+        "metrics.f1_macro"
+    ]
+}

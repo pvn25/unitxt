@@ -1,3 +1,4 @@
+import pickle
 from typing import Any, Dict, List, Literal, Optional
 
 from .api import evaluate, produce
@@ -144,4 +145,150 @@ class LLMAsJudge(BulkInstanceMetric):
                 "judge_raw_output": verdict,
             }
             for instance, verdict in zip(meta_scores, verdicts)
+        ]
+
+
+_verbose = True
+
+
+class MultipleLLMAsJudges(BulkInstanceMetric):
+    main_score: str = "multiple_llm_as_judges"
+    task: Literal["rating.single_turn", "single_turn_with_reference"]
+    template: List[str]
+    format: Optional[str] = None
+    system_prompt: Optional[str] = None
+    strip_system_prompt_and_format_from_inputs: bool = True
+    inference_model: List[InferenceEngine]
+    reduction_map: Optional[Dict[str, List[str]]] = None
+    batch_size: int = 32
+
+    def _get_input_instances(self, task_data: List[Dict]) -> List:
+        if self.strip_system_prompt_and_format_from_inputs:
+            instances = []
+            for task_data_instance in task_data:
+                template = task_data_instance["metadata"]["template"]
+                template, _ = fetch_artifact(template)
+                instance = SequentialOperator(
+                    steps=[template, "formats.empty"]
+                ).process_instance(
+                    {"inputs": task_data_instance, "outputs": task_data_instance}
+                )
+                instances.append(instance["source"])
+                """
+                We also have access to: instance["target"]
+                                        instance["references"]
+                """
+            return instances
+        return [t["source"] for t in task_data]
+
+    def _get_instance_for_judge_model(
+        self, input_instances: List[str], predictions: List, references: List
+    ) -> List[Dict]:
+        if self.task == "rating.single_turn":
+            instances = [
+                {
+                    "question": input_instance,
+                    "answer": prediction,
+                    "rating": 5.0,  # This is a dummy value that is not used in practice
+                }
+                for input_instance, prediction, reference in zip(
+                    input_instances, predictions, references
+                )
+            ]
+        elif self.task == "rating.single_turn_with_reference":
+            instances = [
+                {
+                    "question": input_instance,
+                    "answer": prediction,
+                    "reference_answer": reference[0],
+                    "rating": 5.0,  # This is a dummy value that is not used in practice
+                }
+                for input_instance, prediction, reference in zip(
+                    input_instances, predictions, references
+                )
+            ]
+        else:
+            raise NotImplementedError(
+                f"Error in 'LLMAsJudge' metric. {self.task} is not a supported task type."
+            )
+        return instances
+
+    def prepare(self):
+        super().prepare()
+        if self.reduction_map is None:
+            self.reduction_map = {"mean": [self.main_score]}
+
+    def compute(
+        self,
+        references: List[List[Any]],
+        predictions: List[Any],
+        task_data: List[Dict],
+    ) -> List[Dict[str, Any]]:
+        input_instances = self._get_input_instances(task_data)
+        instances = self._get_instance_for_judge_model(
+            input_instances, predictions, references
+        )
+
+        card = f"cards.dynamic_cards_for_llm_judges.{self.task}"
+
+        lst_lsts = []
+        for i in range(len(self.template)):
+            recipe_args = {
+                "card": card,
+                "template": self.template[i],
+                "demos_pool_size": 0,
+                "num_demos": 0,
+                "__type__": settings.default_recipe,
+            }
+            if self.system_prompt:
+                recipe_args["system_prompt"] = self.system_prompt
+            if self.format:
+                recipe_args["format"] = self.format
+            recipe = Artifact.from_dict(recipe_args)
+            dataset = produce(instances, recipe)
+            verdicts = self.inference_model[i].infer(dataset)
+            # if _verbose:
+            #     print("verdicts", verdicts)
+
+            meta_scores = evaluate(predictions=verdicts, data=dataset)
+            # if _verbose:
+            #     print("meta_scores", meta_scores)
+
+            lst = []
+            for instance in meta_scores:
+                lst.append(instance["processed_prediction"])
+                # print(
+                #     "instance[processed_prediction]", instance["processed_prediction"]
+                # )
+            lst_lsts.append(lst)
+
+        # if _verbose:
+        #     print("lst_lsts", type(lst_lsts), lst_lsts)
+        lst_lsts = list(map(list, zip(*lst_lsts)))
+        # if _verbose:
+        #     print("lst_lsts", type(lst_lsts), lst_lsts)
+
+        learned_model = pickle.load(
+            open(
+                "../prepare/templates/response_assessment/judges/relevance/ensemble_relevancy_v2.pkl",
+                "rb",
+            )
+        )
+        predictions = learned_model.predict(lst_lsts).tolist()
+
+        # if _verbose:
+        #     print("ensemble predictions", predictions)
+        #     print("lengths", len(predictions), len(verdicts))
+
+        return [
+            {
+                self.main_score: prediction,
+                "judge_raw_output": verdict,
+            }
+            for prediction, verdict in zip(predictions, verdicts)
+            # {
+            #     self.main_score: instance["processed_prediction"],
+            #     "judge_raw_output": verdict,
+            # }
+            # for instance, verdict in zip(meta_scores, verdicts)
         ]

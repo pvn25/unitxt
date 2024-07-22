@@ -1,0 +1,6 @@
+metric_version_models:
+  relevance: 
+    - ['templates.response_assessment.judges.relevance.v3', 'meta-llama/llama-3-70b-instruct']
+    - ['templates.response_assessment.judges.relevance.v3', 'mistralai/mixtral-8x7b-instruct-v01']
+    - ['templates.response_assessment.judges.relevance.v4', 'meta-llama/llama-3-70b-instruct']
+    - ['templates.response_assessment.judges.relevance.v4', 'mistralai/mixtral-8x7b-instruct-v01']
